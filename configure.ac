@@ -5750,6 +5750,8 @@ AC_CONFIG_FILES([
    callgrind/tests/Makefile
    helgrind/Makefile
    helgrind/tests/Makefile
+   deadwrites/Makefile
+   deadwrites/tests/Makefile
    drd/Makefile
    drd/scripts/download-and-build-splash2
    drd/tests/Makefile
