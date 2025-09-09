@@ -14,7 +14,8 @@ TOOLS = \
 		massif \
 		dhat \
 		lackey \
-		none
+		none \
+		deadwrites
 
 EXP_TOOLS = \
 		exp-bbv

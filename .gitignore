@@ -2466,6 +2466,28 @@ none/tests/freebsd/bug499212
 /none/tests/x86-freebsd/Makefile.in
 /none/tests/x86-freebsd/445032
 
+# /deadwrites/
+/deadwrites/*.so
+/deadwrites/.deps
+/deadwrites/deadwrites-*-darwin
+/deadwrites/deadwrites-*-linux
+/deadwrites/deadwrites-*-solaris
+/deadwrites/deadwrites-*-freebsd
+/deadwrites/Makefile
+/deadwrites/Makefile.in
+
+# /deadwrites/docs/
+/deadwrites/docs/Makefile.in
+/deadwrites/docs/Makefile
+
+# /deadwrites/tests/
+/deadwrites/tests/Makefile
+/deadwrites/tests/Makefile.in
+/deadwrites/tests/*.stderr.diff*
+/deadwrites/tests/*.stderr.out
+/deadwrites/tests/*.stdout.diff*
+/deadwrites/tests/*.stdout.out
+
 # /perf/
 /perf/*.dSYM
 /perf/.deps
