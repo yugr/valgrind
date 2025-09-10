@@ -24,11 +24,14 @@
 */
 
 #include "pub_tool_basics.h"
-#include "pub_tool_tooliface.h"
-#include "pub_tool_options.h"
+#include "pub_tool_execontext.h"
 #include "pub_tool_libcassert.h"
 #include "pub_tool_machine.h"
 #include "pub_tool_mallocfree.h"
+#include "pub_tool_options.h"
+#include "pub_tool_threadstate.h"
+#include "pub_tool_tooliface.h"
+#include "pub_tool_xtree.h"
 
 #include <limits.h>
 
@@ -60,6 +63,52 @@ static void dw_print_debug_usage(void)
    );
 }
 
+//------------------------------------------------------------//
+//--- XTrees                                               ---//
+//------------------------------------------------------------//
+
+static XTree* xt;
+/* heap_xt contains a SizeT: the nr of dead writes from this execontext. */
+static void init_szB(void* value)
+{
+      *((SizeT*)value) = 0;
+}
+static void add_szB(void* to, const void* value)
+{
+      *((SizeT*)to) += *((const SizeT*)value);
+}
+static void sub_szB(void* from, const void* value)
+{
+      *((SizeT*)from) -= *((const SizeT*)value);
+}
+static const HChar* img_szB(const void* count_)
+{
+   static HChar buf[100];
+   const SizeT* count = count_;
+   if (*count) {
+      VG_(sprintf) (buf, "%lu", *count);
+      return buf;
+   } else {
+      return NULL;
+   }
+}
+
+static
+void filter_IPs (Addr* ips, Int n_ips,
+                 UInt* top, UInt* n_ips_sel)
+{
+   Int i;
+   Bool top_has_fnname = False;
+   Bool is_alloc_fn = False;
+   Bool is_inline_fn = False;
+   const HChar *fnname;
+
+   *top = 0;
+   *n_ips_sel = n_ips;
+
+   // TODO
+}
+
 /*------------------------------------------------------------*/
 /*--- Callbacks                                            ---*/
 /*------------------------------------------------------------*/
@@ -86,7 +135,7 @@ static Addr get_index(Addr addr, IndexInfo info)
 
 union PageDir {
    union PageDir* subtables;
-   UShort*        shadow_mem;
+   UInt*          shadow_mem;
 };
 
 static union PageDir pagetable;
@@ -94,25 +143,26 @@ static union PageDir pagetable;
 static ULong n_writes = 0;
 static ULong n_dead_writes = 0;
 
-static inline UShort *get_word(Addr addr)
+// TODO: we can reuse word from previous iteration
+static inline UInt* get_info(Addr addr)
 {
    union PageDir* pde = &pagetable;
 
    #pragma GCC unroll 100
-   for (SizeT i = 0; i < LEVELS - 1; ++i) {
+   for (SizeT i = 0; i < LEVELS; ++i) {
       Addr idx = get_index(addr, W[i]);
 
-      if (i < LEVELS - 2) {
+      if (i < LEVELS - 1) {
          if (UNLIKELY(!pde->subtables))
-            pde->subtables = VG_(calloc)("get_word", 1 << W[i].width, sizeof(union PageDir));
+            pde->subtables = VG_(calloc)("get_info", 1 << W[i].width, sizeof(union PageDir));
          pde = &pde->subtables[idx];
          continue;
       }
 
       if (UNLIKELY(!pde->shadow_mem))
-         pde->shadow_mem = VG_(calloc)("get_word", 1 << W[i].width, sizeof(UShort));
+         pde->shadow_mem = VG_(calloc)("get_info", 1 << W[i].width, sizeof(*pde->shadow_mem));
 
-      return &pde->shadow_mem[idx];
+       return &pde->shadow_mem[idx];
    }
 
    tl_assert(0);
@@ -120,48 +170,35 @@ static inline UShort *get_word(Addr addr)
 
 static VG_REGPARM(2) void dw_load(Addr addr, SizeT size)
 {
-//   VG_(printf)(" L %08lx,%lu\n", addr, size);
-
    for (SizeT i = 0; i < size; ++i) {
-      Addr    byte_addr = addr + i;
-      // TODO: we can reuse word from previous iteration
-      UShort* w = get_word(byte_addr);
-      Addr    offset = get_index(byte_addr, W[LEVELS - 1]);
-      *w &= ~(UShort)(1 << offset);
+      Addr  byte_addr = addr + i;
+      UInt* ecu = get_info(byte_addr);
+      *ecu = 0;
    }
-}
-
-static inline void report_dead_write(Addr base, SizeT start, SizeT end) {
-   if (!clo_print_deads)
-      return;
-   // TODO: report call stack
-   VG_(printf)("Dead write of %lu byte(s) at %08lx\n", end - start, base + start);
 }
 
 static VG_REGPARM(2) void dw_store(Addr addr, SizeT size)
 {
-//   VG_(printf)(" S %08lx,%lu\n", addr, size);
+   ExeContext* here;
+   Xecu        new_ecu;
+   SizeT       zero = 0;
 
-   Int first_dead_write = -1;
+   // XTree API is so intuitive...
+   here = VG_(record_ExeContext)( VG_(get_running_tid)(), 0 );
+   new_ecu = VG_(XT_add_to_ec)(xt, here, &zero);
+
+   n_writes += size;
 
    for (SizeT i = 0; i < size; ++i) {
-      Addr    byte_addr = addr + i;
-      // TODO: we can reuse word from previous iteration
-      UShort* w = get_word(byte_addr);
-      Addr    offset = get_index(byte_addr, W[LEVELS - 1]);
-      ++n_writes;
-      if (*w & (1 << offset)) {
-         if (first_dead_write < 0)
-            first_dead_write = i;
+      Addr  byte_addr = addr + i;
+      UInt* ecu = get_info(byte_addr);
+      if (*ecu & 1) {
+         SizeT one = 1;
+         VG_(XT_add_to_xecu)(xt, *ecu & ~(Xecu)1, &one);
          ++n_dead_writes;
-      } else if (first_dead_write >= 0) {
-         report_dead_write(addr, first_dead_write, i);
       }
-      *w |= 1 << offset;
+      *ecu = new_ecu | 1;
    }
-
-   if (first_dead_write >= 0)
-      report_dead_write(addr, first_dead_write, size);
 }
 
 /*------------------------------------------------------------*/
@@ -413,18 +450,21 @@ static void dw_fini(Int exitcode) {
    VG_(umsg)("Detected %u%% dead writes (%llu out of %llu total)\n",
              (unsigned)(100.0 * n_dead_writes / n_writes), n_dead_writes,
              n_writes);
+   // TODO: filename
+   const HChar* meta = "DeadWrites : number of dead writes";
+   VG_(XT_callgrind_print)(xt, "tmp.txt", meta, img_szB);
 }
 
 static void dw_pre_clo_init(void)
 {
    /* Sanity checks */
    Addr w = 0;
-   for (SizeT i = 0; i < LEVELS - 1; ++i) {
-      tl_assert(W[i].lsb == W[i + 1].lsb + W[i + 1].width);
+   for (SizeT i = 0; i < LEVELS; ++i) {
+      if (i < LEVELS - 1)
+         tl_assert(W[i].lsb == W[i + 1].lsb + W[i + 1].width);
       w += W[i].width;
    }
-   tl_assert(w + W[LEVELS - 1].width == sizeof(Addr) * CHAR_BIT);
-   tl_assert((1 << W[LEVELS - 1].width) == sizeof(*pagetable.shadow_mem) * CHAR_BIT);
+   tl_assert(w == sizeof(Addr) * CHAR_BIT);
 
    VG_(details_name)            ("DeadWrites");
    VG_(details_version)         (NULL);
@@ -445,6 +485,14 @@ static void dw_pre_clo_init(void)
    VG_(needs_core_errors)       (True); /* Yes, but... see dw_post_clo_init  */
 
    /* No needs, no core events to track */
+
+   xt = VG_(XT_create)(VG_(malloc),
+                       "ms.xtrees",
+                       VG_(free),
+                       sizeof(SizeT),
+                       init_szB, add_szB, sub_szB,
+                       filter_IPs);
+
 }
 
 VG_DETERMINE_INTERFACE_VERSION(dw_pre_clo_init)
